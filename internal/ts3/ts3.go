@@ -9,6 +9,9 @@ import (
     "time"
 )
 
+// Define ErrNotConnected at the top of the file
+var ErrNotConnected = fmt.Errorf("not connected to TeamSpeak server")
+
 type Client struct {
     conn    net.Conn
     reader  *bufio.Reader
@@ -40,7 +43,6 @@ func (c *Client) Connect() error {
             return fmt.Errorf("failed to read message: %w", err)
         }
         msg = strings.TrimSpace(msg)
-        log.Printf("← Received: %q", msg)
         
         if strings.Contains(msg, "schandlerid=1") {
             break
@@ -52,13 +54,10 @@ func (c *Client) Connect() error {
 
 func (c *Client) Authenticate(apiKey string) error {
     command := []byte("auth apikey=" + apiKey + "\r\n")
-    log.Printf("→ Sending command: %q", string(command))
     
-    n, err := c.conn.Write(command)
-    if err != nil {
+    if _, err := c.conn.Write(command); err != nil {  // Remove the 'n' variable
         return fmt.Errorf("failed to write auth command: %w", err)
     }
-    log.Printf("→ Sent %d bytes", n)
 
     // Read response immediately
     response, err := c.reader.ReadString('\n')
@@ -66,7 +65,6 @@ func (c *Client) Authenticate(apiKey string) error {
         return fmt.Errorf("failed to read auth response: %w", err)
     }
     response = strings.TrimSpace(response)
-    log.Printf("← Auth response: %q", response)
 
     if !strings.HasPrefix(response, "error") {
         // If we didn't get an error response, try reading another line
@@ -75,7 +73,6 @@ func (c *Client) Authenticate(apiKey string) error {
             return fmt.Errorf("failed to read second auth response: %w", err)
         }
         response = strings.TrimSpace(response)
-        log.Printf("← Second auth response: %q", response)
     }
 
     if response == "error id=0 msg=ok" {
@@ -85,51 +82,28 @@ func (c *Client) Authenticate(apiKey string) error {
     return fmt.Errorf("authentication failed: %s", response)
 }
 
-func (c *Client) GetClid() (string, error) {
-    command := "whoami\r\n"
-    log.Printf("→ Sending: %q", command)
-    if _, err := c.conn.Write([]byte(command)); err != nil {
-        return "", fmt.Errorf("failed to send whoami command: %w", err)
-    }
-
-    // Read until we get the clid response
-    for {
-        line, err := c.reader.ReadString('\n')
-        if err != nil {
-            return "", fmt.Errorf("failed to read response: %w", err)
-        }
-        line = strings.TrimSpace(line)
-        log.Printf("← Received: %q", line)
-
-        if strings.HasPrefix(line, "clid=") {
-            parts := strings.Fields(line)
-            if len(parts) > 0 {
-                return strings.TrimPrefix(parts[0], "clid="), nil
-            }
-        }
-    }
-}
-
 func (c *Client) GetMuteStatus(clid string) (bool, bool, error) {
     var inputMuted, outputMuted bool
 
     // Get input mute status
     command := fmt.Sprintf("clientvariable clid=%s client_input_muted\r\n", clid)
-    log.Printf("→ Sending: %q", command)
     if _, err := c.conn.Write([]byte(command)); err != nil {
-        return false, false, err
+        return false, false, ErrNotConnected
     }
 
     // Read until we get the input mute status
     for {
         line, err := c.reader.ReadString('\n')
         if err != nil {
-            return false, false, err
+            return false, false, ErrNotConnected
         }
         line = strings.TrimSpace(line)
-        log.Printf("← Received (input): %q", line)
 
-        // Server returns output status when querying input
+        if strings.Contains(line, "error id=1794") {
+            log.Printf("Error: Client disconnected from TeamSpeak server")
+            return false, false, ErrNotConnected
+        }
+
         if strings.Contains(line, "client_output_muted=") {
             outputMuted = strings.HasSuffix(line, "=1")
         }
@@ -141,21 +115,22 @@ func (c *Client) GetMuteStatus(clid string) (bool, bool, error) {
 
     // Get output mute status
     command = fmt.Sprintf("clientvariable clid=%s client_output_muted\r\n", clid)
-    log.Printf("→ Sending: %q", command)
     if _, err := c.conn.Write([]byte(command)); err != nil {
-        return false, false, err
+        return false, false, ErrNotConnected
     }
 
-    // Read until we get the output mute status
     for {
         line, err := c.reader.ReadString('\n')
         if err != nil {
-            return false, false, err
+            return false, false, ErrNotConnected
         }
         line = strings.TrimSpace(line)
-        log.Printf("← Received (output): %q", line)
 
-        // Server returns input status when querying output
+        if strings.Contains(line, "error id=1794") {
+            log.Printf("Error: Client disconnected from TeamSpeak server")
+            return false, false, ErrNotConnected
+        }
+
         if strings.Contains(line, "client_input_muted=") {
             inputMuted = strings.HasSuffix(line, "=1")
         }
@@ -165,7 +140,6 @@ func (c *Client) GetMuteStatus(clid string) (bool, bool, error) {
         }
     }
 
-    log.Printf("Final mute status - Input: %v, Output: %v", inputMuted, outputMuted)
     return inputMuted, outputMuted, nil
 }
 
@@ -174,4 +148,36 @@ func (c *Client) Close() error {
         return c.conn.Close()
     }
     return nil
+}
+// Add this method to the Client struct
+func (c *Client) IsConnected() bool {
+    return c.conn != nil
+}
+// Add this function after Authenticate
+func (c *Client) GetClid() (string, error) {
+    command := "whoami\r\n"
+    if _, err := c.conn.Write([]byte(command)); err != nil {
+        return "", ErrNotConnected
+    }
+
+    // Read until we get the clid response
+    for {
+        line, err := c.reader.ReadString('\n')
+        if err != nil {
+            return "", ErrNotConnected
+        }
+        line = strings.TrimSpace(line)
+
+        if strings.Contains(line, "error id=1794") {
+            log.Printf("Error: Client not connected to server")
+            return "", ErrNotConnected
+        }
+
+        if strings.HasPrefix(line, "clid=") {
+            parts := strings.Fields(line)
+            if len(parts) > 0 {
+                return strings.TrimPrefix(parts[0], "clid="), nil
+            }
+        }
+    }
 }

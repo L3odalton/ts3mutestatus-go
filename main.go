@@ -1,6 +1,7 @@
 package main
 
 import (
+    "fmt"
     "log"
     "os"
     "os/signal"
@@ -27,38 +28,90 @@ func main() {
     // Get initial state
     state, err := haClient.GetState()
     if err != nil {
-        log.Fatalf("Failed to get initial HA state: %v", err)
+        log.Printf("Failed to get initial HA state: %v", err)
+        state = "off"
     }
     previousMicStatus := state == "on"
     log.Printf("Initial HA state: %s", state)
 
-    // Connect to TS3 once
-    if err := ts3Client.Connect(); err != nil {
-        log.Fatalf("Failed to connect to TS3: %v", err)
-    }
-    defer ts3Client.Close()
-
-    if err := ts3Client.Authenticate(cfg.TS3ApiKey); err != nil {
-        log.Fatalf("Failed to authenticate with TS3: %v", err)
-    }
-
-    // Get initial CLID
-    clid, err := ts3Client.GetClid()
-    if err != nil {
-        log.Fatalf("Failed to get initial CLID: %v", err)
-    }
+    var clid string
+    reconnectDelay := 10 * time.Second
 
     // Main monitoring loop
     go func() {
         for {
+            // Try to connect if not connected
+            if !ts3Client.IsConnected() {
+                if err := connectTS3(ts3Client, cfg.TS3ApiKey); err != nil {
+                    log.Printf("Failed to connect to TS3: %v, retrying in %v", err, reconnectDelay)
+                    ts3Client.Close()
+                    ts3Client = ts3.New(cfg.TS3Address)
+                    time.Sleep(reconnectDelay)
+                    continue
+                }
+                
+                // Get CLID after successful connection
+                var err error
+                clid, err = ts3Client.GetClid()
+                if err != nil {
+                    if err == ts3.ErrNotConnected {
+                        log.Printf("Client not connected to server after auth, retrying in %v", reconnectDelay)
+                        ts3Client.Close()
+                        ts3Client = ts3.New(cfg.TS3Address)
+                        time.Sleep(reconnectDelay)
+                        continue
+                    }
+                    log.Printf("Failed to get CLID: %v, retrying in %v", err, reconnectDelay)
+                    ts3Client.Close()
+                    ts3Client = ts3.New(cfg.TS3Address)
+                    time.Sleep(reconnectDelay)
+                    continue
+                }
+                log.Printf("Connected to TS3 with CLID: %s", clid)
+            }
+
+            // Check mute status
             inputMuted, outputMuted, err := ts3Client.GetMuteStatus(clid)
             if err != nil {
+                if err == ts3.ErrNotConnected {
+                    log.Printf("Lost connection to TS3, closing connection and reconnecting in %v", reconnectDelay)
+                    ts3Client.Close()
+                    ts3Client = ts3.New(cfg.TS3Address)
+                    time.Sleep(reconnectDelay)
+                    continue
+                }
                 log.Printf("Error getting mute status: %v", err)
                 time.Sleep(time.Second)
                 continue
             }
+            // In the main monitoring loop
+            if !ts3Client.IsConnected() {
+                if err := connectTS3(ts3Client, cfg.TS3ApiKey); err != nil {
+                    log.Printf("Error: %v, retrying in %v", err, reconnectDelay)
+                    time.Sleep(reconnectDelay)
+                    continue
+                }
+                
+                // Get CLID after successful connection
+                var err error
+                clid, err = ts3Client.GetClid()
+                if err != nil {
+                    if err == ts3.ErrNotConnected {
+                        log.Printf("Error: Client not connected to server, retrying in %v", reconnectDelay)
+                        ts3Client.Close()
+                        ts3Client = ts3.New(cfg.TS3Address)
+                        time.Sleep(reconnectDelay)
+                        continue
+                    }
+                    log.Printf("Error: Failed to get CLID: %v, retrying in %v", err, reconnectDelay)
+                    ts3Client.Close()
+                    time.Sleep(reconnectDelay)
+                    continue
+                }
+                log.Printf("Successfully connected to TeamSpeak server with CLID: %s", clid)
+            }
 
-            // Mic is on only when both input and output are not muted
+            // Update Home Assistant
             micStatus := !inputMuted && !outputMuted
             if micStatus != previousMicStatus {
                 action := "turn_off"
@@ -79,12 +132,21 @@ func main() {
         }
     }()
 
-    // Wait for shutdown signal
     <-sigChan
     log.Println("Shutting down...")
-    
-    // Set final state to off
-    if err := haClient.SetState("turn_off"); err != nil {
-        log.Printf("Error setting final state: %v", err)
+    ts3Client.Close()
+}
+
+// Helper function to handle the connection process
+func connectTS3(client *ts3.Client, apiKey string) error {
+    if err := client.Connect(); err != nil {
+        return fmt.Errorf("connect failed: %w", err)
     }
+
+    if err := client.Authenticate(apiKey); err != nil {
+        client.Close()
+        return fmt.Errorf("authentication failed: %w", err)
+    }
+
+    return nil
 }
