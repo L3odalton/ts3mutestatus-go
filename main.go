@@ -75,6 +75,13 @@ func main() {
             if err != nil {
                 if err == ts3.ErrNotConnected {
                     log.Printf("Lost connection to TS3, closing connection and reconnecting in %v", reconnectDelay)
+                    // Update HA to turn off when disconnected
+                    if err := haClient.SetState("turn_off"); err != nil {
+                        log.Printf("Error: Failed to set HA state to off on disconnect: %v", err)
+                    } else {
+                        log.Printf("Home Assistant state set to off due to disconnect")
+                        previousMicStatus = false
+                    }
                     ts3Client.Close()
                     ts3Client = ts3.New(cfg.TS3Address)
                     time.Sleep(reconnectDelay)
