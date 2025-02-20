@@ -129,8 +129,9 @@ func (c *Client) GetMuteStatus(clid string) (bool, bool, error) {
         line = strings.TrimSpace(line)
         log.Printf("← Received (input): %q", line)
 
-        if strings.Contains(line, "client_input_muted=") {
-            inputMuted = strings.HasSuffix(line, "=1")
+        // Server returns output status when querying input
+        if strings.Contains(line, "client_output_muted=") {
+            outputMuted = strings.HasSuffix(line, "=1")
         }
 
         if strings.Contains(line, "error id=0") {
@@ -154,8 +155,9 @@ func (c *Client) GetMuteStatus(clid string) (bool, bool, error) {
         line = strings.TrimSpace(line)
         log.Printf("← Received (output): %q", line)
 
-        if strings.Contains(line, "client_output_muted=") {
-            outputMuted = strings.HasSuffix(line, "=1")
+        // Server returns input status when querying output
+        if strings.Contains(line, "client_input_muted=") {
+            inputMuted = strings.HasSuffix(line, "=1")
         }
 
         if strings.Contains(line, "error id=0") {

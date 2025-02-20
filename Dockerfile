@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24.0-alpine AS builder
 WORKDIR /app
 COPY . .
 # Create the go.mod file inside the container

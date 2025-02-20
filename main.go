@@ -58,11 +58,12 @@ func main() {
                 continue
             }
 
+            // Mic is on only when both input and output are not muted
             micStatus := !inputMuted && !outputMuted
             if micStatus != previousMicStatus {
-                action := "turn_on"
-                if !micStatus {
-                    action = "turn_off"
+                action := "turn_off"
+                if micStatus {
+                    action = "turn_on"
                 }
 
                 if err := haClient.SetState(action); err != nil {
